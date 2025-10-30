@@ -1,8 +1,9 @@
-// Web Worker for Three.js rendering (simplified version)
-import * as THREE from 'three';
+// Web Worker for Three.js rendering
+// Worker只负责计算状态数据，不创建Three.js对象
+// 主线程负责创建Mesh并渲染
 
 interface WorkerMessage {
-  type: 'init' | 'resize' | 'cleanup';
+  type: 'init' | 'resize' | 'cleanup' | 'createMesh';
   data?: any;
 }
 
@@ -11,69 +12,150 @@ interface InitData {
   height: number;
 }
 
-class ThreeWorkerRenderer {
-  private scene: THREE.Scene;
-  private camera!: THREE.PerspectiveCamera;
-  private cube!: THREE.Mesh;
-  private animationId: number | null = null;
+interface CubeState {
+  rotation: { x: number; y: number; z: number };
+  position: { x: number; y: number; z: number };
+}
 
-  constructor() {
-    this.scene = new THREE.Scene();
-  }
+// Mesh创建指令（在Worker中定义，主线程执行）
+interface MeshCreateCommand {
+  id: string;
+  geometry: {
+    type: 'box' | 'sphere' | 'plane';
+    params: {
+      width?: number;
+      height?: number;
+      depth?: number;
+      radius?: number;
+      widthSegments?: number;
+      heightSegments?: number;
+    };
+  };
+  material: {
+    type: 'basic' | 'standard' | 'lambert';
+    color?: number;
+    params?: any;
+  };
+  initialTransform?: {
+    position?: { x: number; y: number; z: number };
+    rotation?: { x: number; y: number; z: number };
+    scale?: { x: number; y: number; z: number };
+  };
+}
+
+class ThreeWorkerRenderer {
+  private cubeState: CubeState = {
+    rotation: { x: 0, y: 0, z: 0 },
+    position: { x: 0, y: 0, z: 0 },
+  };
+  private animationId: number | null = null;
+  private lastTime: number = 0;
 
   init(data: InitData) {
-    const { width, height } = data;
+    console.log('Worker: Initializing with dimensions:', data.width, data.height);
+    
+    // Worker中定义Mesh的创建指令（逻辑在这里，执行在主线程）
+    const cubeMeshCommand: MeshCreateCommand = {
+      id: 'cube-1',
+      geometry: {
+        type: 'box',
+        params: {
+          width: 1,
+          height: 1,
+          depth: 1,
+        },
+      },
+      material: {
+        type: 'basic',
+        color: 0xff0000, // 红色
+      },
+      initialTransform: {
+        position: { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0},
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    };
 
-    console.log('Worker: Initializing with dimensions:', width, height);
+    // 同步cubeState到初始变换（确保状态和初始变换一致）
+    // if (cubeMeshCommand.initialTransform) {
+    //   if (cubeMeshCommand.initialTransform.rotation) {
+    //     this.cubeState.rotation = { ...cubeMeshCommand.initialTransform.rotation };
+    //   }
+    //   if (cubeMeshCommand.initialTransform.position) {
+    //     this.cubeState.position = { ...cubeMeshCommand.initialTransform.position };
+    //   }
+    // }
 
-    // 创建相机
-    this.camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-    this.camera.position.z = 5;
+    // 发送创建指令到主线程，让主线程创建实际的Three.js对象
+    self.postMessage({
+      type: 'createMesh',
+      data: cubeMeshCommand,
+    });
 
-    // 创建立方体
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-    this.cube = new THREE.Mesh(geometry, material);
-    this.scene.add(this.cube);
-
-    // 开始动画循环
-    this.startAnimation();
-
-    // 通知主线程初始化完成
+    // 延迟发送初始状态，确保Mesh先创建完成
+    setTimeout(() => {
+//      this.updateRenderData();
+    }, 10);
+    
+    // 通知主线程初始化完成，然后开始动画循环
     self.postMessage({ type: 'initComplete' });
+    
+    // 启动动画循环（在Worker中只计算状态数据）
+    // this.startAnimation();
   }
 
-  resize(width: number, height: number) {
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+  resize(_width: number, _height: number) {
+    // Worker中不需要处理resize，只负责计算状态
+    // 相机和渲染器在主线程管理
+  }
+
+  private updateRenderData() {
+    // 将Worker中计算的状态数据发送到主线程
+    // 主线程会使用这些数据更新实际的Three.js Mesh
+    self.postMessage({
+      type: 'renderData',
+      data: {
+        meshId: 'cube-1', // 指定要更新的Mesh ID
+        rotation: { ...this.cubeState.rotation },
+        position: { ...this.cubeState.position },
+      },
+    });
   }
 
   private startAnimation() {
+    const targetFPS = 60;
+    const frameInterval = 1000 / targetFPS;
+    
     const animate = () => {
-      this.animationId = requestAnimationFrame(animate);
+      // 在Worker中没有requestAnimationFrame，使用setTimeout模拟
+      this.animationId = setTimeout(() => {
+        const now = performance.now();
+        
+        // 计算时间差，实现平滑动画
+        const deltaTime = this.lastTime ? (now - this.lastTime) / 1000 : 0;
+        this.lastTime = now;
+        
+        // 在Worker线程中计算状态（旋转、位置等数值）
+        // 这里只计算数据，不操作Three.js对象
+        const rotationSpeed = 1.0; // 弧度/秒
+        this.cubeState.rotation.x += rotationSpeed * deltaTime;
+        this.cubeState.rotation.y += rotationSpeed * deltaTime;
 
-      // 旋转立方体
-      this.cube.rotation.x += 0.01;
-      this.cube.rotation.y += 0.01;
-
-      // 发送渲染数据到主线程
-      self.postMessage({
-        type: 'renderData',
-        data: {
-          rotation: {
-            x: this.cube.rotation.x,
-            y: this.cube.rotation.y,
-          },
-        },
-      });
+        // 将更新后的状态发送到主线程，主线程会用这些数据更新实际的Mesh
+        this.updateRenderData();
+        
+        // 继续下一帧
+        animate();
+      }, frameInterval) as any;
     };
 
+    this.lastTime = performance.now();
     animate();
   }
 
   cleanup() {
     if (this.animationId) {
-      cancelAnimationFrame(this.animationId);
+      clearTimeout(this.animationId);
       this.animationId = null;
     }
   }
@@ -100,4 +182,4 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
 });
 
 // 导出类型供主线程使用
-export type { WorkerMessage, InitData };
+export type { WorkerMessage, InitData, MeshCreateCommand };

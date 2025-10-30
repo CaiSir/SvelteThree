@@ -1,15 +1,16 @@
 <script lang="ts">
-  import Header from './UI/components/Header.svelte'
-  import Navigation from './UI/components/Navigation.svelte'
-  import Sidebar from './UI/components/Sidebar.svelte'
-  import Footer from './UI/components/Footer.svelte'
+  // import Header from './UI/components/Header.svelte'
+  // import Navigation from './UI/components/Navigation.svelte'
+  // import Sidebar from './UI/components/Sidebar.svelte'
+  // import Footer from './UI/components/Footer.svelte'
+  import ButtonPerformanceTest from './UI/components/ButtonPerformanceTest.svelte'
   import { onMount } from 'svelte'
-  import * as THREE from 'three'
   import { WorkerRendererService } from './Services/Worker/WorkerRendererService'
 
   let canvasContainer: HTMLDivElement
   let renderMode: 'worker' | 'main' = 'main'
   let workerRenderer: WorkerRendererService
+  let currentView: 'three' | 'buttons' = 'three'
 
   onMount(() => {
     console.log('Component mounted, initializing Three.js...')
@@ -72,105 +73,81 @@
       // 降级到主线程渲染
       renderMode = 'main'
       console.log('Using main thread rendering (fallback)')
-      return initMainThreadRenderer(canvas)
-    }
-  }
-
-  function initMainThreadRenderer(canvas: HTMLCanvasElement) {
-    console.log('Initializing main thread renderer...')
-    
-    // 设置canvas尺寸
-    const width = 800
-    const height = 600
-    canvas.width = width
-    canvas.height = height
-    
-    console.log('Canvas dimensions set to:', width, height)
-    
-    // 创建场景
-    const scene = new THREE.Scene()
-    console.log('Scene created')
-    
-    // 创建相机
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
-    console.log('Camera created')
-    
-    // 创建渲染器
-    const renderer = new THREE.WebGLRenderer({ 
-      canvas: canvas,
-      antialias: true 
-    })
-    renderer.setSize(width, height)
-    renderer.setClearColor(0x87CEEB) // 天蓝色背景
-    console.log('Renderer created')
-    
-    // 创建立方体几何体
-    const geometry = new THREE.BoxGeometry(1, 1, 1)
-    console.log('Geometry created')
-    
-    // 创建材质
-    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
-    console.log('Material created')
-    
-    // 创建立方体网格
-    const cube = new THREE.Mesh(geometry, material)
-    scene.add(cube)
-    console.log('Cube created and added to scene')
-    
-    // 设置相机位置
-    camera.position.z = 5
-    console.log('Camera position set')
-    
-    // 动画循环
-    function animate() {
-      requestAnimationFrame(animate)
-      
-      // 旋转立方体
-      cube.rotation.x += 0.01
-      cube.rotation.y += 0.01
-      
-      // 渲染场景
-      renderer.render(scene, camera)
-    }
-    
-    console.log('Starting animation loop...')
-    animate()
-    
-    // 处理窗口大小变化
-    function handleResize() {
-      const newWidth = canvasContainer.clientWidth || 800
-      const newHeight = canvasContainer.clientHeight || 600
-      
-      camera.aspect = newWidth / newHeight
-      camera.updateProjectionMatrix()
-      renderer.setSize(newWidth, newHeight)
-    }
-    
-    window.addEventListener('resize', handleResize)
-    
-    // 清理函数
-    return () => {
-      console.log('Cleaning up Three.js...')
-      window.removeEventListener('resize', handleResize)
-      if (canvasContainer && canvas) {
-        canvasContainer.removeChild(canvas)
+      return () => {
+        if (canvasContainer && canvas) {
+          canvasContainer.removeChild(canvas)
+        }
       }
     }
   }
+
 </script>
 
 <main>  
-  <div class="three-container">
-    <div class="render-info">
-      <h2>Three.js 渲染演示</h2>
-      <p>当前渲染模式: <span class="render-mode">{renderMode === 'worker' ? 'Web Worker (高性能)' : '主线程 (兼容模式)'}</span></p>
-      <p>状态: <span id="status">初始化中...</span></p>
-    </div>
-    <div bind:this={canvasContainer} class="canvas-wrapper"></div>
+  <div class="view-switcher">
+    <button 
+      class="switch-btn" 
+      class:active={currentView === 'buttons'}
+      on:click={() => currentView = 'buttons'}
+    >
+      性能测试 (10000按钮)
+    </button>
+    <button 
+      class="switch-btn" 
+      class:active={currentView === 'three'}
+      on:click={() => currentView = 'three'}
+    >
+      Three.js 渲染
+    </button>
   </div>
+
+  {#if currentView === 'buttons'}
+    <ButtonPerformanceTest />
+  {:else}
+    <div class="three-container">
+      <div class="render-info">
+        <h2>Three.js 渲染演示</h2>
+        <p>当前渲染模式: <span class="render-mode">{renderMode === 'worker' ? 'Web Worker (高性能)' : '主线程 (兼容模式)'}</span></p>
+        <p>状态: <span id="status">初始化中...</span></p>
+      </div>
+      <div bind:this={canvasContainer} class="canvas-wrapper"></div>
+    </div>
+  {/if}
 </main>
 
 <style>
+  .view-switcher {
+    display: flex;
+    gap: 10px;
+    padding: 20px;
+    border-bottom: 2px solid #eee;
+    background: #f9f9f9;
+  }
+  
+  .switch-btn {
+    padding: 12px 24px;
+    border: 2px solid #667eea;
+    background: white;
+    color: #667eea;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+  
+  .switch-btn:hover {
+    background: #667eea;
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+  }
+  
+  .switch-btn.active {
+    background: #667eea;
+    color: white;
+  }
+
   .three-container {
     margin: 20px;
     padding: 20px;

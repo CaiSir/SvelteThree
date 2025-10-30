@@ -1,4 +1,4 @@
-import type { InitData } from '../../workers/renderWorker';
+import type { InitData, MeshCreateCommand } from '../../workers/renderWorker';
 import * as THREE from 'three';
 
 export class WorkerRendererService {
@@ -7,7 +7,7 @@ export class WorkerRendererService {
   private renderer: THREE.WebGLRenderer | null = null;
   private scene: THREE.Scene | null = null;
   private camera: THREE.PerspectiveCamera | null = null;
-  private cube: THREE.Mesh | null = null;
+  private meshes: Map<string, THREE.Mesh> = new Map(); // 存储所有Mesh
   private animationId: number | null = null;
   private isSupported: boolean = false;
 
@@ -42,7 +42,7 @@ export class WorkerRendererService {
         canvas.clientHeight
       );
 
-      // 在主线程创建Three.js场景用于渲染
+      // 在主线程创建Three.js场景和渲染器（只创建基础设施，Mesh等Worker指令创建）
       this.initMainThreadThreeJS();
 
       // 创建Worker
@@ -81,6 +81,9 @@ export class WorkerRendererService {
       switch (type) {
         case 'initComplete':
           console.log('Worker renderer initialized successfully');
+          break;
+        case 'createMesh':
+          this.createMeshFromCommand(data as MeshCreateCommand);
           break;
         case 'renderData':
           this.updateMainThreadRender(data);
@@ -130,26 +133,147 @@ export class WorkerRendererService {
     this.renderer.setSize(width, height);
     this.renderer.setClearColor(0x87ceeb);
 
-    // 创建立方体
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-    this.cube = new THREE.Mesh(geometry, material);
-    this.scene.add(this.cube);
+    // 注意：Mesh由Worker发送创建指令，主线程执行创建
+    // 这里只初始化场景和渲染器，不创建Mesh
+    console.log('Main: Three.js scene and renderer initialized (waiting for Worker mesh commands)');
+  }
 
-    console.log('Main: Three.js scene initialized successfully');
+  // 根据Worker的指令创建Mesh（主线程执行）
+  private createMeshFromCommand(command: MeshCreateCommand): void {
+    if (!this.scene) {
+      console.error('Scene not initialized, cannot create mesh');
+      return;
+    }
+
+    console.log('Main: Creating mesh from Worker command:', command.id);
+
+    // 根据指令创建Geometry
+    let geometry: THREE.BufferGeometry;
+    switch (command.geometry.type) {
+      case 'box':
+        const { width = 1, height = 1, depth = 1 } = command.geometry.params;
+        geometry = new THREE.BoxGeometry(width, height, depth);
+        break;
+      case 'sphere':
+        const { radius = 1, widthSegments = 32, heightSegments = 32 } = command.geometry.params;
+        geometry = new THREE.SphereGeometry(radius, widthSegments, heightSegments);
+        break;
+      case 'plane':
+        const { width: w = 1, height: h = 1 } = command.geometry.params;
+        geometry = new THREE.PlaneGeometry(w, h);
+        break;
+      default:
+        console.error('Unknown geometry type:', command.geometry.type);
+        return;
+    }
+
+    // 根据指令创建Material
+    let material: THREE.Material;
+    switch (command.material.type) {
+      case 'basic':
+        material = new THREE.MeshBasicMaterial({ 
+          color: command.material.color || 0xffffff,
+          ...command.material.params,
+        });
+        break;
+      case 'standard':
+        material = new THREE.MeshStandardMaterial({ 
+          color: command.material.color || 0xffffff,
+          ...command.material.params,
+        });
+        break;
+      case 'lambert':
+        material = new THREE.MeshLambertMaterial({ 
+          color: command.material.color || 0xffffff,
+          ...command.material.params,
+        });
+        break;
+      default:
+        console.error('Unknown material type:', command.material.type);
+        return;
+    }
+
+    // 创建Mesh
+    const mesh = new THREE.Mesh(geometry, material);
+
+    // 应用初始变换
+    if (command.initialTransform) {
+      if (command.initialTransform.position) {
+        mesh.position.set(
+          command.initialTransform.position.x,
+          command.initialTransform.position.y,
+          command.initialTransform.position.z
+        );
+      }
+      if (command.initialTransform.rotation) {
+        mesh.rotation.set(
+          command.initialTransform.rotation.x,
+          command.initialTransform.rotation.y,
+          command.initialTransform.rotation.z
+        );
+      }
+      if (command.initialTransform.scale) {
+        mesh.scale.set(
+          command.initialTransform.scale.x,
+          command.initialTransform.scale.y,
+          command.initialTransform.scale.z
+        );
+      }
+    }
+
+    // 存储Mesh（使用ID作为key）
+    this.meshes.set(command.id, mesh);
+    this.scene.add(mesh);
+
+    console.log('Main: Mesh created and added to scene:', command.id);
+    
+    // Mesh创建后立即渲染一次，确保初始状态显示
+    if (this.renderer && this.scene && this.camera) {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   private updateMainThreadRender(data: any): void {
-    if (!this.cube || !this.renderer || !this.scene || !this.camera) return;
+    if (!this.renderer || !this.scene || !this.camera) return;
 
-    // 更新立方体旋转
-    if (data.rotation) {
-      this.cube.rotation.x = data.rotation.x;
-      this.cube.rotation.y = data.rotation.y;
+    // 根据Worker传来的数据更新所有Mesh的状态
+    // Worker在子线程中计算状态，主线程只负责更新和渲染
+    if (data.meshId) {
+      // 如果指定了meshId，只更新特定的Mesh
+      const mesh = this.meshes.get(data.meshId);
+      if (mesh) {
+        this.updateMeshTransform(mesh, data);
+      }
+    } else {
+      // 如果没有指定meshId，更新第一个Mesh（兼容旧代码）
+      const firstMesh = this.meshes.values().next().value;
+      if (firstMesh) {
+        this.updateMeshTransform(firstMesh, data);
+      }
     }
 
-    // 渲染场景
+    // 在主线程渲染场景
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateMeshTransform(mesh: THREE.Mesh, data: any): void {
+    if (data.rotation) {
+      mesh.rotation.x = data.rotation.x;
+      mesh.rotation.y = data.rotation.y;
+      mesh.rotation.z = data.rotation.z || 0;
+    }
+
+    if (data.position) {
+      mesh.position.x = data.position.x;
+      mesh.position.y = data.position.y;
+      mesh.position.z = data.position.z;
+    }
+
+    if (data.scale) {
+      mesh.scale.x = data.scale.x;
+      mesh.scale.y = data.scale.y;
+      mesh.scale.z = data.scale.z;
+    }
   }
 
   cleanup(): void {
@@ -169,10 +293,23 @@ export class WorkerRendererService {
       this.renderer = null;
     }
 
+    // 清理所有Mesh
+    this.meshes.forEach(mesh => {
+      mesh.geometry.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(mat => mat.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+      if (this.scene) {
+        this.scene.remove(mesh);
+      }
+    });
+    this.meshes.clear();
+
     this.canvas = null;
     this.scene = null;
     this.camera = null;
-    this.cube = null;
   }
 
   get supported(): boolean {
